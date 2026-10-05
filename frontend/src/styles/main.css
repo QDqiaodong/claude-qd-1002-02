@@ -1,0 +1,145 @@
+:root {
+  /* 靛青主色 —— 与已建各仓的主色均不重复 */
+  --primary: #283593;
+  --primary-deep: #1a237e;
+  --primary-soft: #3f51b5;
+  --primary-wash: #e8eaf6;
+  --ink: #23294a;
+  --muted: #6f7691;
+  --line: #dfe1ee;
+  --bg: #f5f6fb;
+
+  --el-color-primary: #283593;
+  --el-color-primary-light-3: #5c6bc0;
+  --el-color-primary-light-5: #8c9eff;
+  --el-color-primary-light-7: #b3b9ff;
+  --el-color-primary-light-8: #c5c9ff;
+  --el-color-primary-light-9: #e3e5ff;
+  --el-color-primary-dark-2: #202a75;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+/* ---------------- 外壳：左侧纵向时间轴导航 ---------------- */
+.smt-app { display: flex; min-height: 100vh; }
+
+.timeline {
+  width: 208px;
+  flex: none;
+  background: linear-gradient(180deg, var(--primary-deep), var(--primary));
+  color: #fff;
+  padding: 18px 14px;
+  position: relative;
+}
+
+.tl-brand { font-size: 15px; font-weight: 800; letter-spacing: 0.2px; margin-bottom: 4px; }
+.tl-sub { font-size: 12px; opacity: 0.76; margin-bottom: 20px; }
+
+/* 时间轴主干：一条竖线把各节点串起来 */
+.tl-rail { position: relative; padding-left: 22px; }
+.tl-rail::before {
+  content: "";
+  position: absolute;
+  left: 6px; top: 6px; bottom: 6px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.tl-node {
+  position: relative;
+  padding: 10px 10px 10px 12px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tl-node:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* 节点圆点 */
+.tl-node::before {
+  content: "";
+  position: absolute;
+  left: -19px; top: 16px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--primary-deep);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+}
+
+.tl-node.on { background: rgba(255, 255, 255, 0.18); }
+.tl-node.on::before {
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.22);
+}
+
+.tl-title { font-size: 14px; font-weight: 700; }
+.tl-desc { font-size: 11px; opacity: 0.74; margin-top: 2px; }
+.tl-step { font-size: 10px; opacity: 0.6; margin-top: 3px; letter-spacing: 0.4px; }
+
+.tl-foot {
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.24);
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.main { flex: 1; min-width: 0; padding: 16px 18px 32px; }
+
+/* ---------------- 视图通用件 ---------------- */
+.panel {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.panel-title { font-size: 15px; font-weight: 800; color: var(--primary-deep); }
+.panel-desc { font-size: 12px; color: var(--muted); }
+.spacer { margin-left: auto; }
+
+.stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.stat {
+  background: var(--primary-wash);
+  border: 1px solid #d3d8f5;
+  border-radius: 9px;
+  padding: 8px 14px;
+  min-width: 108px;
+}
+.stat .k { font-size: 12px; color: var(--primary-soft); }
+.stat .v { font-size: 19px; font-weight: 800; color: var(--primary-deep); margin-top: 2px; }
+
+.err {
+  background: #fdecea; border: 1px solid #f5c6c2; color: #a32b20;
+  padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px;
+}
+.ok-tip {
+  background: var(--primary-wash); border: 1px solid #d3d8f5; color: var(--primary-deep);
+  padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px;
+}
+
+.act {
+  padding: 7px 14px; border-radius: 7px; cursor: pointer; font-size: 13px;
+  border: 1px solid var(--line); background: #fff; color: var(--ink);
+}
+.act:hover { border-color: var(--primary-soft); color: var(--primary-deep); }
+.act.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 700; }
+.act.primary:hover { background: var(--primary-deep); color: #fff; }
+.act.sm { padding: 4px 10px; font-size: 12px; }
+.act:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.fld { padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; background: #fff; }
+.fld.n { width: 92px; }
+
+.el-table { --el-table-header-bg-color: var(--primary-wash); --el-table-header-text-color: var(--primary-deep); }
+.el-button--primary { background: var(--primary) !important; border-color: var(--primary) !important; }
