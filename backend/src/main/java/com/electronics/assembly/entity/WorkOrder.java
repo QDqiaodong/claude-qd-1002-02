@@ -53,6 +53,13 @@ public class WorkOrder {
     @Column(name = "status", nullable = false, length = 16)
     private String status;
 
+    /**
+     * 是否已启用分批生产。false：历史工单，继续按原流程运行（数量与状态直接记在工单上）；
+     * true：数量、状态与交付进度由各制造批次汇总，母工单不再直接报工/投产。
+     */
+    @Column(name = "split_enabled", nullable = false)
+    private Boolean splitEnabled = false;
+
     @Column(name = "due_date")
     private LocalDate dueDate;
 

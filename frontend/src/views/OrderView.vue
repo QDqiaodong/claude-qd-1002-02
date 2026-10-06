@@ -2,11 +2,13 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import router from '../router'
 import api from '../api'
+import BatchTree from '../components/BatchTree.vue'
 
 // ------------------------------------------------------------------
 // 页面操作范式：优先级泳道。
 // 高 / 中 / 低 三条横向泳道各占一行，工单是一张张卡片落在对应优先级的泳道里，
 // 逾期卡片整张描红；点卡片就地展开（不是弹窗），展开区里做报工 / 投产 / 推进。
+// 已启用分批生产的工单，展开区改为批次树：数量与状态全部以批次汇总为准。
 // ------------------------------------------------------------------
 
 const routeQuery = computed(() => router.currentRoute.value.query || {})
@@ -16,6 +18,7 @@ const error = ref('')
 const tip = ref('')
 const openId = ref(null)
 const reportQty = ref(50)
+const batchTreeRef = ref(null)
 
 const lanes = ['高', '中', '低']
 const byLane = computed(() => {
@@ -46,6 +49,24 @@ async function load() {
 
 function goLineChange(id) {
   router.push('/line-change?order=' + id)
+}
+
+// 展开卡片时若是分批工单（或可分批工单），懒加载批次树
+async function toggleCard(o) {
+  error.value = ''
+  if (openId.value === o.id) {
+    openId.value = null
+    return
+  }
+  openId.value = o.id
+  // 下一帧等 BatchTree 挂载后再触发其加载
+  setTimeout(() => batchTreeRef.value?.load?.(), 0)
+}
+
+async function reloadOrders() {
+  await load()
+  // 重新挂载的批次树需要再拉一次
+  setTimeout(() => batchTreeRef.value?.load?.(), 0)
 }
 
 async function release(id) {
@@ -108,7 +129,7 @@ onMounted(load)
             :key="o.id"
             class="wo-card"
             :class="{ open: openId === o.id, late: o.daysToDue !== null && o.daysToDue < 0 }"
-            @click="openId = openId === o.id ? null : o.id"
+            @click="toggleCard(o)"
           >
             <div class="wo-top">
               <span class="wo-no">{{ o.orderNo }}</span>
@@ -139,7 +160,18 @@ onMounted(load)
                 </template>
                 <button class="act sm" @click="goLineChange(o.id)">换线详情</button>
               </div>
-              <div class="op-row">
+
+              <!-- 分批生产批次树：启用后母工单数量/状态/交付进度全部由批次汇总 -->
+              <BatchTree
+                v-if="o.splitEnabled || true"
+                :ref="(el) => { if (openId === o.id) batchTreeRef = el }"
+                :order="o"
+                @changed="reloadOrders"
+                @error="(m) => { if (m) error = m; tip = '' }"
+              />
+
+              <!-- 未启用分批的历史工单：沿用原流程的母工单操作 -->
+              <div v-if="!o.splitEnabled" class="op-row" style="margin-top:8px">
                 <button class="act primary" :disabled="o.status !== '待投产'" @click="release(o.id)">投产</button>
                 <span class="op-label">报工</span>
                 <input type="number" min="1" v-model.number="reportQty" class="fld n" />
@@ -148,7 +180,17 @@ onMounted(load)
                 <button class="act" :disabled="o.status !== '待检验'" @click="transfer(o.id, '已完成')">完成</button>
                 <button class="act" @click="transfer(o.id, '已取消')">取消</button>
               </div>
-              <div class="note">投产会走齐套校验，缺料或齐套率不足会被拦下。</div>
+              <div v-else class="op-row" style="margin-top:8px">
+                <button class="act" :disabled="o.status !== '待检验'" @click="transfer(o.id, '已完成')">
+                  全部批次已完成 · 完成母工单
+                </button>
+                <button class="act" @click="transfer(o.id, '已取消')">取消母工单</button>
+              </div>
+              <div class="note">
+                {{ o.splitEnabled
+                  ? '母工单完成数量、状态与交付进度由各批次汇总；只有全部批次完成后才能完成母工单。'
+                  : '历史工单按原流程运行；投产会走齐套校验，缺料或齐套率不足会被拦下。也可点「启用分批」拆成制造批次。' }}
+              </div>
             </div>
           </div>
           <div v-if="!(byLane[p] || []).length" class="lane-empty">本泳道暂无工单</div>
@@ -178,8 +220,11 @@ onMounted(load)
   border: 1px solid var(--line); border-radius: 9px;
   padding: 9px 11px; cursor: pointer; background: #fff;
 }
+.wo-card.open {
+  flex: 1 1 100%; width: 100%;
+  border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-wash);
+}
 .wo-card:hover { border-color: var(--primary-soft); }
-.wo-card.open { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-wash); }
 .wo-card.late { border-color: #ef9a9a; background: #fff6f6; }
 
 .wo-top { display: flex; align-items: center; gap: 6px; }

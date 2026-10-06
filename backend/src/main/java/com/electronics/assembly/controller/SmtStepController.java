@@ -26,8 +26,9 @@ public class SmtStepController {
 
     @GetMapping
     public ApiResponse<List<SmtStep>> list(@RequestParam(required = false) Long orderId,
+                                           @RequestParam(required = false) Long batchId,
                                            @RequestParam(required = false) String status) {
-        return ApiResponse.success(stepService.list(orderId, status));
+        return ApiResponse.success(stepService.list(orderId, batchId, status));
     }
 
     @GetMapping("/{id}")

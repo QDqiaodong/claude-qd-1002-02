@@ -36,17 +36,20 @@ public class WorkOrderService {
     private final SmtStepRepository stepRepository;
     private final OrderLineConfigRepository configRepository;
     private final RepairTaskService repairTaskService;
+    private final ProductionBatchService batchService;
 
     public WorkOrderService(WorkOrderRepository orderRepository,
                             BomItemRepository bomRepository,
                             SmtStepRepository stepRepository,
                             OrderLineConfigRepository configRepository,
-                            RepairTaskService repairTaskService) {
+                            RepairTaskService repairTaskService,
+                            ProductionBatchService batchService) {
         this.orderRepository = orderRepository;
         this.bomRepository = bomRepository;
         this.stepRepository = stepRepository;
         this.configRepository = configRepository;
         this.repairTaskService = repairTaskService;
+        this.batchService = batchService;
     }
 
     public List<WorkOrder> list(String status, String productModel) {
@@ -151,6 +154,9 @@ public class WorkOrderService {
             if (input.getPlanQty() <= 0) {
                 throw new BizException("计划板数必须大于 0");
             }
+            if (Boolean.TRUE.equals(order.getSplitEnabled())) {
+                throw new BizException("该工单已启用分批生产，母工单计划板数由分批方案守恒约束（取消批次时仅可经计划员确认减产），不能直接修改");
+            }
             if (order.getDoneQty() != null && order.getDoneQty() > input.getPlanQty()) {
                 throw new BizException("计划板数不能小于已完成的 " + order.getDoneQty() + " 板");
             }
@@ -168,6 +174,10 @@ public class WorkOrderService {
     @Transactional
     public WorkOrder release(Long id) {
         WorkOrder order = get(id);
+        // 启用分批后由各批次独立投产，母工单投产入口关闭（历史工单仍走原流程）
+        if (Boolean.TRUE.equals(order.getSplitEnabled())) {
+            throw new BizException("该工单已启用分批生产，请对具体批次投产，母工单不再整体投产");
+        }
         if (!"待投产".equals(order.getStatus())) {
             throw new BizException("只有「待投产」的工单能投产，当前状态：" + order.getStatus());
         }
@@ -211,6 +221,10 @@ public class WorkOrderService {
     @Transactional
     public WorkOrder report(Long id, Integer qty) {
         WorkOrder order = get(id);
+        // 启用分批后数量由各批次报工汇总，母工单直接报工会破坏数量口径
+        if (Boolean.TRUE.equals(order.getSplitEnabled())) {
+            throw new BizException("该工单已启用分批生产，请在具体批次上报工，母工单完成数量由批次汇总");
+        }
         if (qty == null || qty <= 0) {
             throw new BizException("报工数量必须大于 0");
         }
@@ -235,8 +249,17 @@ public class WorkOrderService {
         if (!"已取消".equals(target) && !Dict.canTransferOrder(order.getStatus(), target)) {
             throw new BizException("工单只能逐级推进，不允许从「" + order.getStatus() + "」到「" + target + "」");
         }
-        if ("已完成".equals(target) && order.getGapQty() > 0) {
-            throw new BizException("还欠 " + order.getGapQty() + " 板未完成，不能置为已完成");
+        if ("已完成".equals(target)) {
+            if (Boolean.TRUE.equals(order.getSplitEnabled())) {
+                // 分批口径：只有全部批次完成（已取消/历史批次不阻塞），母工单才能完成
+                if (!batchService.allRegularFinished(id)) {
+                    throw new BizException("还有制造批次未完成（待投产/贴片中/待检验），必须全部批次完成后母工单才能完成");
+                }
+                // 母工单完成数量始终由批次汇总，完成前再汇总一次，保证交付进度不失真
+                order = batchService.recomputeOrder(order);
+            } else if (order.getGapQty() > 0) {
+                throw new BizException("还欠 " + order.getGapQty() + " 板未完成，不能置为已完成");
+            }
         }
         // 返修闭环未走完不能推进：有未复验通过的返修任务时不能把工单往前转
         int openRepairs = repairTaskService.countOpenByOrder(id);

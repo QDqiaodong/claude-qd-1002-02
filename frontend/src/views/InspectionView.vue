@@ -11,14 +11,19 @@ import api from '../api'
 // ------------------------------------------------------------------
 
 const orders = ref([])
+const batches = ref([])
 const inspections = ref([])
 const repairTasks = ref([])
 const error = ref('')
 const tip = ref('')
 const MAX_POINTS = 12
 const submitting = ref(false)
-const form = ref({ orderId: null, stepName: 'AOI', defectType: '偏移', defectPoints: 0, sampleQty: 40, inspector: '孙悦' })
+const form = ref({ orderId: null, batchId: null, stepName: 'AOI', defectType: '偏移', defectPoints: 0, sampleQty: 40, inspector: '孙悦' })
 const DEFECTS = ['少件', '偏移', '虚焊', '连锡', '反向']
+
+// 当前选中工单的批次（分批工单必须选批次；未分批工单为空数组）
+const batchOptions = computed(() => batches.value)
+const selectedOrder = computed(() => orders.value.find((o) => o.id === form.value.orderId))
 
 // 返修工署名 / 复验署名与备注
 const repairBy = ref('李返修')
@@ -50,7 +55,16 @@ async function load() {
     inspections.value = is
     repairTasks.value = ts
     if (!form.value.orderId && orders.value.length) form.value.orderId = orders.value[0].id
+    await onOrderChange()
   } catch (e) { error.value = e.message }
+}
+
+// 切工单：加载该工单的批次（分批后质检挂到具体批次）
+async function onOrderChange() {
+  form.value.batchId = null
+  try {
+    batches.value = await api.listBatches(form.value.orderId)
+  } catch (e) { batches.value = [] }
 }
 
 async function create() {
@@ -61,7 +75,12 @@ async function create() {
   form.value.requestId = requestId
   submitting.value = true
   try {
-    const payload = { ...form.value, order: { id: form.value.orderId }, requestId }
+    const payload = {
+      ...form.value,
+      order: { id: form.value.orderId },
+      batch: form.value.batchId ? { id: form.value.batchId } : null,
+      requestId
+    }
     const saved = await api.createInspection(payload)
     tip.value = saved.verdict === '返修'
       ? `已登记质检，结论「返修」：返修任务已建立，工序「${saved.stepName}」已置为返修中`
@@ -123,8 +142,15 @@ onMounted(load)
       <div v-if="tip" class="ok-tip">{{ tip }}</div>
 
       <div class="form-row">
-        <select v-model="form.orderId" class="fld">
+        <select v-model="form.orderId" class="fld" @change="onOrderChange">
           <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.orderNo }}</option>
+        </select>
+        <select v-if="batchOptions.length" v-model="form.batchId" class="fld">
+          <option :value="null" disabled>选择制造批次</option>
+          <option v-for="b in batchOptions.filter(x => !x.readOnly && x.status !== '已取消')"
+                  :key="b.id" :value="b.id">
+            {{ b.batchNo }} · {{ b.status }}
+          </option>
         </select>
         <select v-model="form.stepName" class="fld">
           <option>上料</option><option>贴片</option><option>回流焊</option><option>AOI</option><option>目检</option>
@@ -161,6 +187,7 @@ onMounted(load)
           <div v-for="t in todoRepair" :key="t.id" class="rt-card">
             <div class="rt-main">
               <b>{{ orderNoOf(t.order?.id ?? t.orderId) }}</b>
+              <span v-if="t.batchNo">{{ t.batchNo }}</span>
               <span>{{ t.stepName }}</span>
               <em>第 {{ t.roundNo }} 轮</em>
             </div>
@@ -200,6 +227,7 @@ onMounted(load)
         >
           <div class="insp-top">
             <span class="i-no">{{ i.orderNo }}</span>
+            <span v-if="i.batchNo" class="i-step">{{ i.batchNo }}</span>
             <span class="i-step">{{ i.stepName }}</span>
             <span class="i-type">{{ i.defectType }}</span>
             <span class="i-verdict">{{ i.verdict }}</span>

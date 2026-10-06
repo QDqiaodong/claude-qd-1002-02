@@ -12,9 +12,12 @@ import com.electronics.assembly.common.BizException;
 import com.electronics.assembly.common.Dict;
 import com.electronics.assembly.dto.RepairTaskRequest;
 import com.electronics.assembly.entity.Inspection;
+import com.electronics.assembly.entity.ProductionBatch;
 import com.electronics.assembly.entity.RepairTask;
 import com.electronics.assembly.entity.WorkOrder;
 import com.electronics.assembly.repository.InspectionRepository;
+import com.electronics.assembly.repository.ProductionBatchRepository;
+import com.electronics.assembly.repository.SmtStepRepository;
 import com.electronics.assembly.repository.WorkOrderRepository;
 
 /**
@@ -35,13 +38,19 @@ public class InspectionService {
 
     private final InspectionRepository inspectionRepository;
     private final WorkOrderRepository orderRepository;
+    private final ProductionBatchRepository batchRepository;
+    private final SmtStepRepository stepRepository;
     private final RepairTaskService repairTaskService;
 
     public InspectionService(InspectionRepository inspectionRepository,
                              WorkOrderRepository orderRepository,
+                             ProductionBatchRepository batchRepository,
+                             SmtStepRepository stepRepository,
                              RepairTaskService repairTaskService) {
         this.inspectionRepository = inspectionRepository;
         this.orderRepository = orderRepository;
+        this.batchRepository = batchRepository;
+        this.stepRepository = stepRepository;
         this.repairTaskService = repairTaskService;
     }
 
@@ -104,6 +113,36 @@ public class InspectionService {
         if (input.getSampleQty() == null || input.getSampleQty() <= 0) {
             throw new BizException("抽检板数必须大于 0");
         }
+
+        // 分批生产：质检挂到具体批次上，每批独立走质检与返修闭环；批次必须属于该工单且在制
+        ProductionBatch batch = null;
+        if (input.getBatch() != null && input.getBatch().getId() != null) {
+            batch = batchRepository.findById(input.getBatch().getId())
+                    .orElseThrow(() -> new BizException("制造批次不存在：" + input.getBatch().getId()));
+            if (!batch.getOrder().getId().equals(orderId)) {
+                throw new BizException("批次 " + batch.getBatchNo() + " 不属于工单 " + order.getOrderNo());
+            }
+            if (Boolean.TRUE.equals(batch.getReadOnly())) {
+                throw new BizException("历史批次「" + batch.getBatchNo() + "」为只读数据，不能登记质检");
+            }
+            if ("已取消".equals(batch.getStatus())) {
+                throw new BizException("批次「" + batch.getBatchNo() + "」已取消，不能登记质检");
+            }
+            // 送检量约束：累计质检抽检板数不超过批次已送检数量
+            int alreadySampled = inspectionRepository.findByBatchId(batch.getId()).stream()
+                    .mapToInt(i -> nz(i.getSampleQty())).sum();
+            if (alreadySampled + input.getSampleQty() > nz(batch.getInspectedQty())) {
+                throw new BizException("批次「" + batch.getBatchNo() + "」累计抽检 " + (alreadySampled + input.getSampleQty())
+                        + " 板超过已送检 " + batch.getInspectedQty() + " 板");
+            }
+            // 该批次必须已铺开并到达这道工序（存在工序行；返修/进行中都可登记）
+            if (stepRepository.findByBatchIdAndStepName(batch.getId(), input.getStepName()).isEmpty()) {
+                throw new BizException("批次「" + batch.getBatchNo() + "」尚未投产或没有工序「"
+                        + input.getStepName() + "」，不能登记质检");
+            }
+        } else if (Boolean.TRUE.equals(order.getSplitEnabled())) {
+            throw new BizException("该工单已启用分批生产，质检必须指定具体批次");
+        }
         int points = input.getDefectPoints() == null ? 0 : input.getDefectPoints();
         if (points < 0) {
             throw new BizException("不良点数不能为负数");
@@ -111,6 +150,7 @@ public class InspectionService {
 
         Inspection insp = new Inspection();
         insp.setOrder(order);
+        insp.setBatch(batch);
         insp.setStepName(input.getStepName());
         insp.setDefectType(input.getDefectType());
         insp.setDefectPoints(points);
@@ -155,6 +195,10 @@ public class InspectionService {
     /** 未闭环的返修单（旧口径：verdict=返修 且 repair_done=false） */
     public List<Inspection> openRepairs() {
         return inspectionRepository.findByVerdictAndRepairDone("返修", false);
+    }
+
+    private static int nz(Integer v) {
+        return v == null ? 0 : v;
     }
 
     /**

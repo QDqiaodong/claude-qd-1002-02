@@ -40,6 +40,11 @@ public class RepairTask {
     @JoinColumn(name = "order_id", nullable = false)
     private WorkOrder order;
 
+    /** 所属制造批次；null = 未分批的历史工单 */
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "batch_id")
+    private ProductionBatch batch;
+
     /** 触发本任务的质检记录（一对一，唯一索引兜底） */
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "inspection_id", nullable = false)
@@ -86,6 +91,12 @@ public class RepairTask {
     @Transient
     public String getOrderNo() {
         return order == null ? null : order.getOrderNo();
+    }
+
+    /** 所属批次号，派生字段（未分批历史工单为 null） */
+    @Transient
+    public String getBatchNo() {
+        return batch == null ? null : batch.getBatchNo();
     }
 
     /** 是否未闭环（返修工与质检员还要继续处理），派生字段 */

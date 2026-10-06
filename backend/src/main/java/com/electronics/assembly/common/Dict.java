@@ -25,6 +25,16 @@ public final class Dict {
 
     public static final List<String> PRIORITIES = List.of("高", "中", "低");
 
+    // ---------------- 制造批次（工单分批生产） ----------------
+    /** 批次状态机与工单一致：逐级推进、不可倒退；已取消为旁路终态 */
+    public static final List<String> BATCH_FLOW = List.of("待投产", "贴片中", "待检验", "已完成");
+
+    public static final List<String> BATCH_STATUSES = List.of("待投产", "贴片中", "待检验", "已完成", "已取消");
+
+    /** 批次调整记录动作 */
+    public static final List<String> BATCH_ACTIONS = List.of(
+            "建批", "历史迁移", "调整计划", "删除", "投产", "报工", "送检", "完成", "取消", "回收", "减产");
+
     // ---------------- 物料 ----------------
     /** 封装 */
     public static final List<String> PACKAGES = List.of("0201", "0402", "0603", "0805", "SOT", "QFP", "BGA");
@@ -101,6 +111,21 @@ public final class Dict {
     public static boolean canTransferOrder(String from, String to) {
         int i = ORDER_FLOW.indexOf(from);
         return i >= 0 && i + 1 < ORDER_FLOW.size() && ORDER_FLOW.get(i + 1).equals(to);
+    }
+
+    public static boolean isValidBatchStatus(String status) {
+        return status != null && BATCH_STATUSES.contains(status);
+    }
+
+    /** 批次状态只能逐级推进（与工单同口径），状态倒退一律拒绝 */
+    public static boolean canTransferBatch(String from, String to) {
+        int i = BATCH_FLOW.indexOf(from);
+        return i >= 0 && i + 1 < BATCH_FLOW.size() && BATCH_FLOW.get(i + 1).equals(to);
+    }
+
+    /** 批次状态在流程中的序号，用于比较「不能倒退」 */
+    public static int batchStageIndex(String status) {
+        return BATCH_FLOW.indexOf(status);
     }
 
     public static boolean isValidPriority(String p) {

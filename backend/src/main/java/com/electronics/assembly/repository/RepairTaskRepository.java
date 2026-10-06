@@ -30,4 +30,14 @@ public interface RepairTaskRepository extends JpaRepository<RepairTask, Long> {
             + "and t.status <> '已复验通过' order by t.id desc")
     List<RepairTask> findOpenByOrderIdAndStepName(@Param("orderId") Long orderId,
                                                   @Param("stepName") String stepName);
+
+    /** 分批生产：某批次某道工序是否存在未闭环返修任务（每批独立走五道工序与质检） */
+    @Query("select t from RepairTask t where t.batch.id = :batchId and t.stepName = :stepName "
+            + "and t.status <> '已复验通过' order by t.id desc")
+    List<RepairTask> findOpenByBatchIdAndStepName(@Param("batchId") Long batchId,
+                                                  @Param("stepName") String stepName);
+
+    /** 分批生产：某批次是否存在任何未闭环返修任务（批次推进 / 完成前断言用） */
+    @Query("select t from RepairTask t where t.batch.id = :batchId and t.status <> '已复验通过' order by t.id desc")
+    List<RepairTask> findOpenByBatchId(@Param("batchId") Long batchId);
 }

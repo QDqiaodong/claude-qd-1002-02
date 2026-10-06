@@ -34,7 +34,10 @@ public class SmtStepService {
         this.repairTaskService = repairTaskService;
     }
 
-    public List<SmtStep> list(Long orderId, String status) {
+    public List<SmtStep> list(Long orderId, Long batchId, String status) {
+        if (batchId != null) {
+            return stepRepository.findByBatchIdOrderById(batchId);
+        }
         if (orderId != null) {
             return stepRepository.findByOrderIdOrderById(orderId);
         }
@@ -62,14 +65,17 @@ public class SmtStepService {
         }
         if (idx > 0) {
             String prev = Dict.STEPS.get(idx - 1);
-            SmtStep prevStep = stepRepository
-                    .findByOrderIdAndStepName(step.getOrder().getId(), prev)
+            SmtStep prevStep = findStep(step, prev)
                     .orElseThrow(() -> new BizException("前序工序「" + prev + "」尚未建立"));
             if (!"已完成".equals(prevStep.getStatus())) {
                 throw new BizException("前序工序「" + prev + "」尚未完成，当前状态：" + prevStep.getStatus());
             }
             // 前序处于返修中等状态时上面已拦下；这里再防一手「前序有未闭环返修却显示已完成」的不一致数据
-            repairTaskService.assertStepUnblocked(step.getOrder().getId(), prev, "开工");
+            if (step.getBatch() != null) {
+                repairTaskService.assertBatchStepUnblocked(step.getBatch().getId(), prev, "开工");
+            } else {
+                repairTaskService.assertStepUnblocked(step.getOrder().getId(), prev, "开工");
+            }
         }
         if (!Dict.canTransferStep(step.getStatus(), "进行中")) {
             if ("返修中".equals(step.getStatus())) {
@@ -79,7 +85,11 @@ public class SmtStepService {
             throw new BizException("工序「" + step.getStepName() + "」当前为「" + step.getStatus() + "」，不能开工");
         }
         // 本工序自身有未闭环返修也不允许开工（游标已置返修中时正常会落在上面的分支）
-        repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "开工");
+        if (step.getBatch() != null) {
+            repairTaskService.assertBatchStepUnblocked(step.getBatch().getId(), step.getStepName(), "开工");
+        } else {
+            repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "开工");
+        }
         // 规则④：换线批次未放行时，阻止工单从上料推进到贴片
         lineChangeService.assertStepReleased(step.getOrder().getId(), step.getStepName(), "开工");
         step.setStatus("进行中");
@@ -100,7 +110,11 @@ public class SmtStepService {
             throw new BizException("只有「进行中」的工序能完工，当前状态：" + step.getStatus());
         }
         // 未完成返修不能跳过该工序：本工序存在未闭环返修任务时禁止完工
-        repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "完工");
+        if (step.getBatch() != null) {
+            repairTaskService.assertBatchStepUnblocked(step.getBatch().getId(), step.getStepName(), "完工");
+        } else {
+            repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "完工");
+        }
         // 规则④：换线批次未放行时，进行中的贴片也不能完工（首件确认前不得批量贴片）
         lineChangeService.assertStepReleased(step.getOrder().getId(), step.getStepName(), "完工");
         step.setStatus("已完成");
@@ -134,5 +148,16 @@ public class SmtStepService {
             }
         }
         return new int[]{done, steps.size()};
+    }
+
+    /**
+     * 找同一作用域（批次内优先，否则工单级历史工序）的指定工序。
+     * 分批后每批各铺一套五道工序，前序校验必须限定在同一批次内，不能串批。
+     */
+    private java.util.Optional<SmtStep> findStep(SmtStep scope, String stepName) {
+        if (scope.getBatch() != null) {
+            return stepRepository.findByBatchIdAndStepName(scope.getBatch().getId(), stepName);
+        }
+        return stepRepository.findByOrderIdAndStepName(scope.getOrder().getId(), stepName);
     }
 }

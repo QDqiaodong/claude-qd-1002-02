@@ -10,18 +10,31 @@ import api from '../api'
 // ------------------------------------------------------------------
 
 const orders = ref([])
+const batches = ref([])
 const steps = ref([])
 const blockInfo = ref(null)
 const selectedId = ref(null)
+const selectedBatchId = ref(null)
 const error = ref('')
 const tip = ref('')
 const operator = ref('王强')
 
 const STEPS = ['上料', '贴片', '回流焊', 'AOI', '目检']
 
+const selectedOrder = computed(() => orders.value.find((o) => o.id === selectedId.value) || null)
+// 分批工单按批次各自一套工序；未分批历史工单批次列表为空
+const batchOptions = computed(() => batches.value)
+
 const stepMap = computed(() => {
   const m = {}
-  for (const s of steps.value) m[s.stepName] = s
+  for (const s of steps.value) {
+    // 同名工序出现多条（同工单多个批次）时存成数组，提示先选批次
+    if (m[s.stepName]) {
+      m[s.stepName] = Array.isArray(m[s.stepName]) ? [...m[s.stepName], s] : [m[s.stepName], s]
+    } else {
+      m[s.stepName] = s
+    }
+  }
   return m
 })
 
@@ -29,16 +42,28 @@ const stepMap = computed(() => {
 const cursor = computed(() => {
   for (const name of STEPS) {
     const s = stepMap.value[name]
-    if (!s || s.status !== '已完成') return name
+    if (!s) return name
+    const one = Array.isArray(s) ? s[0] : s
+    if (one.status !== '已完成') return name
   }
   return null
 })
 
-const doneCount = computed(() => STEPS.filter((n) => stepMap.value[n] && stepMap.value[n].status === '已完成').length)
+const doneCount = computed(() => STEPS.filter((n) => {
+  const s = stepMap.value[n]
+  if (!s) return false
+  const one = Array.isArray(s) ? s[0] : s
+  return one.status === '已完成'
+}).length)
 
 // 返修中工序（游标回炉停线）
 const repairingSteps = computed(() =>
-  STEPS.filter((n) => stepMap.value[n] && stepMap.value[n].status === '返修中'))
+  STEPS.filter((n) => {
+    const s = stepMap.value[n]
+    if (!s) return false
+    const one = Array.isArray(s) ? s[0] : s
+    return one.status === '返修中'
+  }))
 
 async function load() {
   error.value = ''
@@ -49,9 +74,21 @@ async function load() {
   } catch (e) { error.value = e.message }
 }
 
+async function onOrderChange() {
+  selectedBatchId.value = null
+  await loadSteps()
+}
+
 async function loadSteps() {
-  if (!selectedId.value) { steps.value = []; blockInfo.value = null; return }
-  steps.value = await api.listSteps({ orderId: selectedId.value })
+  if (!selectedId.value) { steps.value = []; blockInfo.value = null; batches.value = []; return }
+  try {
+    batches.value = await api.listBatches(selectedId.value)
+  } catch (e) { batches.value = [] }
+  // 只看一个批次（分批生产）；未分批工单或未选批次时看工单全部工序
+  const q = selectedBatchId.value
+    ? { batchId: selectedBatchId.value }
+    : { orderId: selectedId.value }
+  steps.value = await api.listSteps(q)
   try {
     blockInfo.value = await api.getLineChangeBlocking(selectedId.value)
   } catch (e) { blockInfo.value = null }
@@ -59,7 +96,12 @@ async function loadSteps() {
 
 async function act(name, kind) {
   const s = stepMap.value[name]
-  if (!s) { error.value = `工单还没有「${name}」这道工序，请先投产`; return }
+  if (!s) { error.value = `还没有「${name}」这道工序，请先投产`; return }
+  // 分批工单若有多批同名工序，管道不能唯一定位，提示先选批次
+  if (Array.isArray(s)) {
+    error.value = '该工单有多个批次都含「' + name + '」工序，请先在上方选择具体批次'
+    return
+  }
   // 返修中是闭环游标：只能由质检复验推进，节点上直接给出引导，不发任何写请求
   if (s.status === '返修中') {
     error.value = `工序「${name}」返修中：返修工完工后必须由质检员复验通过才能恢复，请到「质检与返修」页处理`
@@ -77,6 +119,12 @@ async function act(name, kind) {
 
 watch(selectedId, () => loadSteps())
 onMounted(load)
+
+// 同名多批工序时返回数组，这里统一取单条（选了批次即唯一；未选批次时数组 → null 只读不可点）
+function nodeOf(name) {
+  const s = stepMap.value[name]
+  return Array.isArray(s) ? null : s
+}
 </script>
 
 <template>
@@ -108,9 +156,18 @@ onMounted(load)
 
       <div class="pick-row">
         <span class="pick-label">工单</span>
-        <select v-model="selectedId" class="fld">
+        <select v-model="selectedId" class="fld" @change="onOrderChange">
           <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.orderNo }} · {{ o.productModel }}</option>
         </select>
+        <template v-if="batchOptions.length">
+          <span class="pick-label">制造批次</span>
+          <select v-model="selectedBatchId" class="fld" @change="loadSteps">
+            <option :value="null">全部批次（只读概览）</option>
+            <option v-for="b in batchOptions" :key="b.id" :value="b.id">
+              {{ b.batchNo }} · {{ b.status }} · {{ b.planQty }}板
+            </option>
+          </select>
+        </template>
         <span class="pick-label">操作员</span>
         <input v-model="operator" class="fld" style="width:110px" />
       </div>
@@ -123,16 +180,16 @@ onMounted(load)
           <div
             class="node"
             :class="[
-              stepMap[name] ? 'st-' + stepMap[name].status : 'st-none',
-              { cursor: cursor === name, repairing: stepMap[name] && stepMap[name].status === '返修中' }
+              nodeOf(name) ? 'st-' + nodeOf(name).status : 'st-none',
+              { cursor: cursor === name, repairing: nodeOf(name) && nodeOf(name).status === '返修中' }
             ]"
-            @click="act(name, stepMap[name] && stepMap[name].status === '已完成' ? 'reset' : (stepMap[name] && stepMap[name].status === '进行中' ? 'finish' : 'start'))"
+            @click="act(name, nodeOf(name) && nodeOf(name).status === '已完成' ? 'reset' : (nodeOf(name) && nodeOf(name).status === '进行中' ? 'finish' : 'start'))"
           >
             <span class="node-i">{{ i + 1 }}</span>
           </div>
           <div class="node-name">{{ name }}</div>
-          <div class="node-state">{{ stepMap[name] ? stepMap[name].status : '未建立' }}</div>
-          <div class="node-op">{{ stepMap[name] && stepMap[name].operator ? stepMap[name].operator : '—' }}</div>
+          <div class="node-state">{{ nodeOf(name) ? nodeOf(name).status : '未建立' }}</div>
+          <div class="node-op">{{ nodeOf(name) && nodeOf(name).operator ? nodeOf(name).operator : '—' }}</div>
         </div>
       </div>
 

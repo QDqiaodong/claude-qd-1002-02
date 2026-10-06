@@ -34,6 +34,25 @@ export default {
   reportOrder: (id, qty) => call(http.post(`/work-orders/${id}/report`, null, params({ qty }))),
   transferOrder: (id, target) => call(http.post(`/work-orders/${id}/transfer`, null, params({ target }))),
 
+  // ---------------- 工单分批生产 ----------------
+  batchContext: (orderId) => call(http.get(`/production-batches/order/${orderId}/context`)),
+  listBatches: (orderId) => call(http.get(`/production-batches/order/${orderId}`)),
+  batchKitCheck: (id) => call(http.get(`/production-batches/${id}/kit-check`)),
+  saveBatchPlan: (orderId, d) => call(http.post(`/production-batches/order/${orderId}/plan`, d)),
+  releaseBatch: (id) => call(http.post(`/production-batches/${id}/release`)),
+  reportBatch: (id, qty, operator) =>
+    call(http.post(`/production-batches/${id}/report`, null, params({ qty, operator }))),
+  inspectBatch: (id, qty, operator) =>
+    call(http.post(`/production-batches/${id}/inspect`, null, params({ qty, operator }))),
+  completeBatchQty: (id, qty, operator) =>
+    call(http.post(`/production-batches/${id}/complete-qty`, null, params({ qty, operator }))),
+  transferBatch: (id, target) => call(http.post(`/production-batches/${id}/transfer`, null, params({ target }))),
+  cancelBatch: (id, p) => call(http.post(`/production-batches/${id}/cancel`, null, params({
+    reclaimToBatchId: p.reclaimToBatchId,
+    confirmReduce: p.confirmReduce,
+    operator: p.operator
+  }))),
+
   // ---------------- 物料 ----------------
   listComponents: (p) => call(http.get('/components', params(p))),
   createComponent: (d) => call(http.post('/components', d)),
@@ -43,8 +62,7 @@ export default {
   transferComponent: (id, target) => call(http.post(`/components/${id}/transfer`, null, params({ target }))),
 
   // ---------------- SMT 工序 ----------------
-  listSteps: (p) => call(http.get('/smt-steps', params(p))),
-  startStep: (id, operator) => call(http.post(`/smt-steps/${id}/start`, null, params({ operator }))),
+  listSteps: (p) => call(http.get('/smt-steps', params(p))),  startStep: (id, operator) => call(http.post(`/smt-steps/${id}/start`, null, params({ operator }))),
   finishStep: (id) => call(http.post(`/smt-steps/${id}/finish`)),
   resetStep: (id) => call(http.post(`/smt-steps/${id}/reset`)),
 
