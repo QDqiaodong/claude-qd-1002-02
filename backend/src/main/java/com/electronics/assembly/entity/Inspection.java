@@ -38,6 +38,12 @@ public class Inspection {
     @JoinColumn(name = "order_id", nullable = false)
     private WorkOrder order;
 
+    /** 分批制造时的质检批次；历史工单为 NULL。 */
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "batch_id")
+    @JsonIgnore
+    private ProductionBatch batch;
+
     /** 质检发生的工序 */
     @Column(name = "step_name", nullable = false, length = 16)
     private String stepName;
@@ -79,6 +85,25 @@ public class Inspection {
     @Transient
     public String getOrderNo() {
         return order == null ? null : order.getOrderNo();
+    }
+
+    @Transient
+    public Long getBatchId() {
+        return batch == null ? null : batch.getId();
+    }
+
+    @Transient
+    public String getBatchNo() {
+        return batch == null ? null : batch.getBatchNo();
+    }
+
+    /** Jackson 反序列化入口：{@code {"batch":{"id":1}}}。 */
+    public void setBatchId(Long batchId) {
+        if (batchId != null) {
+            ProductionBatch b = new ProductionBatch();
+            b.setId(batchId);
+            this.batch = b;
+        }
     }
 
     /** 缺陷率（‰），派生字段：不良点数 / 抽检板数 */

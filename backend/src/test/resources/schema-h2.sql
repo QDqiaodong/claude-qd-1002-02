@@ -3,13 +3,15 @@
 -- 唯一约束（uk_rt_inspection / uk_rt_open / uk_insp_request）必须真实存在，
 -- 并发提交的兜底行为要靠它们在集成测试里验证。
 
-DROP TABLE IF EXISTS repair_event;
-DROP TABLE IF EXISTS repair_task;
 DROP TABLE IF EXISTS line_change_event;
 DROP TABLE IF EXISTS line_change_batch;
 DROP TABLE IF EXISTS order_line_config;
+DROP TABLE IF EXISTS repair_event;
+DROP TABLE IF EXISTS repair_task;
 DROP TABLE IF EXISTS inspection;
 DROP TABLE IF EXISTS smt_step;
+DROP TABLE IF EXISTS batch_adjustment_event;
+DROP TABLE IF EXISTS production_batch;
 DROP TABLE IF EXISTS bom_item;
 DROP TABLE IF EXISTS component;
 DROP TABLE IF EXISTS work_order;
@@ -24,6 +26,48 @@ CREATE TABLE work_order (
     status        VARCHAR(16) NOT NULL,
     due_date      DATE,
     created_at    DATETIME
+);
+
+CREATE TABLE production_batch (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id         BIGINT       NOT NULL,
+    batch_no         VARCHAR(36)  NOT NULL,
+    plan_qty         INT          NOT NULL,
+    reported_qty     INT          NOT NULL DEFAULT 0,
+    inspected_qty    INT          NOT NULL DEFAULT 0,
+    completed_qty    INT          NOT NULL DEFAULT 0,
+    delivery_seq     INT,
+    status           VARCHAR(16)  NOT NULL,
+    readonly_history BOOLEAN      NOT NULL DEFAULT FALSE,
+    cancel_reason    VARCHAR(255),
+    created_at       DATETIME,
+    released_at      DATETIME,
+    finished_at      DATETIME,
+    CONSTRAINT fk_pb_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT uk_pb_order_batch_no UNIQUE (order_id, batch_no),
+    CONSTRAINT uk_pb_order_seq UNIQUE (order_id, delivery_seq),
+    CONSTRAINT ck_pb_qty CHECK (
+        plan_qty > 0 AND reported_qty >= 0 AND inspected_qty >= 0 AND completed_qty >= 0
+        AND reported_qty <= plan_qty AND inspected_qty <= plan_qty AND completed_qty <= plan_qty
+        AND reported_qty >= inspected_qty AND inspected_qty >= completed_qty
+    )
+);
+
+CREATE TABLE batch_adjustment_event (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id         BIGINT       NOT NULL,
+    batch_id         BIGINT,
+    batch_no         VARCHAR(36),
+    action           VARCHAR(16)  NOT NULL,
+    before_qty       INT,
+    after_qty        INT,
+    related_batch_id BIGINT,
+    related_batch_no VARCHAR(36),
+    operator         VARCHAR(32)  NOT NULL,
+    detail           VARCHAR(255),
+    created_at       DATETIME,
+    CONSTRAINT fk_bae_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_bae_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id) ON DELETE SET NULL
 );
 
 CREATE TABLE component (
@@ -47,17 +91,21 @@ CREATE TABLE bom_item (
 CREATE TABLE smt_step (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id    BIGINT      NOT NULL,
+    batch_id    BIGINT,
     step_name   VARCHAR(16) NOT NULL,
     status      VARCHAR(16) NOT NULL,
     operator    VARCHAR(32),
     started_at  DATETIME,
     finished_at DATETIME,
-    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id)
+    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_step_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
+    CONSTRAINT uk_step_batch UNIQUE (batch_id, step_name)
 );
 
 CREATE TABLE inspection (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id      BIGINT      NOT NULL,
+    batch_id      BIGINT,
     step_name     VARCHAR(16) NOT NULL,
     defect_type   VARCHAR(16) NOT NULL,
     defect_points INT         NOT NULL DEFAULT 0,
@@ -68,12 +116,14 @@ CREATE TABLE inspection (
     repair_done   BOOLEAN     NOT NULL DEFAULT FALSE,
     checked_at    DATETIME,
     CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_insp_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
     CONSTRAINT uk_insp_request UNIQUE (request_id)
 );
 
 CREATE TABLE repair_task (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id            BIGINT      NOT NULL,
+    batch_id            BIGINT,
     inspection_id       BIGINT      NOT NULL,
     step_name           VARCHAR(16) NOT NULL,
     round_no            INT         NOT NULL DEFAULT 1,
@@ -87,11 +137,13 @@ CREATE TABLE repair_task (
     created_at          DATETIME,
     -- 与生产库 IF(status <> '已复验通过', ...) STORED 口径一致的 H2 写法
     active_order_id     BIGINT GENERATED ALWAYS AS (CASE WHEN status <> '已复验通过' THEN order_id ELSE NULL END),
+    active_batch_id     BIGINT GENERATED ALWAYS AS (CASE WHEN status <> '已复验通过' THEN COALESCE(batch_id, 0) ELSE NULL END),
     active_step_name    VARCHAR(16) GENERATED ALWAYS AS (CASE WHEN status <> '已复验通过' THEN step_name ELSE NULL END),
     CONSTRAINT fk_rt_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_rt_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
     CONSTRAINT fk_rt_inspection FOREIGN KEY (inspection_id) REFERENCES inspection (id),
     CONSTRAINT uk_rt_inspection UNIQUE (inspection_id),
-    CONSTRAINT uk_rt_open UNIQUE (active_order_id, active_step_name)
+    CONSTRAINT uk_rt_open UNIQUE (active_order_id, active_batch_id, active_step_name)
 );
 
 CREATE TABLE repair_event (

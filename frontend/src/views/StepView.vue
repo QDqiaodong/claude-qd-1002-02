@@ -13,15 +13,24 @@ const orders = ref([])
 const steps = ref([])
 const blockInfo = ref(null)
 const selectedId = ref(null)
+const selectedBatchId = ref(null)
 const error = ref('')
 const tip = ref('')
 const operator = ref('王强')
 
 const STEPS = ['上料', '贴片', '回流焊', 'AOI', '目检']
 
+const selectedOrder = computed(() => orders.value.find((o) => o.id === selectedId.value) || null)
+const activeBatches = computed(() =>
+  (selectedOrder.value?.batches || []).filter((b) => !b.readonlyHistory && b.status !== '已取消')
+)
+
 const stepMap = computed(() => {
   const m = {}
-  for (const s of steps.value) m[s.stepName] = s
+  for (const s of steps.value) {
+    if (selectedBatchId.value && s.batchId !== selectedBatchId.value) continue
+    m[s.stepName] = s
+  }
   return m
 })
 
@@ -51,7 +60,18 @@ async function load() {
 
 async function loadSteps() {
   if (!selectedId.value) { steps.value = []; blockInfo.value = null; return }
-  steps.value = await api.listSteps({ orderId: selectedId.value })
+  const all = await api.listSteps({ orderId: selectedId.value })
+  const order = orders.value.find((o) => o.id === selectedId.value)
+  const batches = (order?.batches || []).filter((b) => !b.readonlyHistory && b.status !== '已取消')
+  if (batches.length) {
+    if (!batches.some((b) => b.id === selectedBatchId.value)) {
+      selectedBatchId.value = batches[0].id
+    }
+    steps.value = all.filter((s) => s.batchId && batches.some((b) => b.id === s.batchId))
+  } else {
+    selectedBatchId.value = null
+    steps.value = all.filter((s) => !s.batchId)
+  }
   try {
     blockInfo.value = await api.getLineChangeBlocking(selectedId.value)
   } catch (e) { blockInfo.value = null }
@@ -75,7 +95,13 @@ async function act(name, kind) {
   } catch (e) { error.value = e.message }
 }
 
-watch(selectedId, () => loadSteps())
+watch(selectedId, () => { selectedBatchId.value = null; loadSteps() })
+watch(selectedBatchId, () => {
+  if (selectedBatchId.value) {
+    const current = steps.value.find((s) => s.batchId === selectedBatchId.value)
+    if (current) steps.value = [...steps.value]
+  }
+})
 onMounted(load)
 </script>
 
@@ -111,6 +137,11 @@ onMounted(load)
         <select v-model="selectedId" class="fld">
           <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.orderNo }} · {{ o.productModel }}</option>
         </select>
+        <select v-if="activeBatches.length" v-model="selectedBatchId" class="fld">
+          <option v-for="b in activeBatches" :key="b.id" :value="b.id">
+            {{ b.batchNo }} · {{ b.status }} · {{ b.planQty }}板
+          </option>
+        </select>
         <span class="pick-label">操作员</span>
         <input v-model="operator" class="fld" style="width:110px" />
       </div>
@@ -130,7 +161,7 @@ onMounted(load)
           >
             <span class="node-i">{{ i + 1 }}</span>
           </div>
-          <div class="node-name">{{ name }}</div>
+          <div class="node-name">{{ name }}<small v-if="selectedBatchId"> · {{ activeBatches.find(b => b.id === selectedBatchId)?.batchNo }}</small></div>
           <div class="node-state">{{ stepMap[name] ? stepMap[name].status : '未建立' }}</div>
           <div class="node-op">{{ stepMap[name] && stepMap[name].operator ? stepMap[name].operator : '—' }}</div>
         </div>
@@ -196,6 +227,7 @@ onMounted(load)
 }
 
 .node-name { font-size: 13px; font-weight: 800; color: var(--primary-deep); margin-top: 4px; }
+.node-name small { font-weight: 600; color: var(--muted); }
 .node-state { font-size: 11px; color: var(--muted); }
 .node-op { font-size: 10px; color: var(--muted); }
 

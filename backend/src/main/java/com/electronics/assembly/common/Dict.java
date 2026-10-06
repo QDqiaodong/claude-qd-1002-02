@@ -23,6 +23,18 @@ public final class Dict {
 
     public static final List<String> ORDER_STATUSES = List.of("待投产", "贴片中", "待检验", "已完成", "已取消");
 
+    // ---------------- 制造批次 ----------------
+    /** 批次沿用工单主流程，另含只读历史批次与取消终态 */
+    public static final List<String> BATCH_STATUSES =
+            List.of("待投产", "贴片中", "待检验", "已完成", "已取消", "历史");
+
+    /** 参与数量守恒与母子状态汇总的批次状态（历史批次承载已迁移产量，仍计入计划口径） */
+    public static final List<String> QUANTITY_EFFECTIVE_BATCH_STATUSES =
+            List.of("待投产", "贴片中", "待检验", "已完成", "历史");
+
+    public static final List<String> BATCH_ADJUST_ACTIONS =
+            List.of("拆分", "调整", "删除", "取消", "回收", "减产", "历史迁移");
+
     public static final List<String> PRIORITIES = List.of("高", "中", "低");
 
     // ---------------- 物料 ----------------
@@ -95,6 +107,19 @@ public final class Dict {
 
     public static boolean isValidOrderStatus(String status) {
         return status != null && ORDER_STATUSES.contains(status);
+    }
+
+    public static boolean isValidBatchStatus(String status) {
+        return status != null && BATCH_STATUSES.contains(status);
+    }
+
+    public static boolean isQuantityEffectiveBatchStatus(String status) {
+        return status != null && QUANTITY_EFFECTIVE_BATCH_STATUSES.contains(status);
+    }
+
+    public static boolean canTransferBatch(String from, String to) {
+        int i = ORDER_FLOW.indexOf(from);
+        return i >= 0 && i + 1 < ORDER_FLOW.size() && ORDER_FLOW.get(i + 1).equals(to);
     }
 
     /** 工单状态只能逐级推进 */

@@ -12,9 +12,11 @@ import com.electronics.assembly.common.BizException;
 import com.electronics.assembly.common.Dict;
 import com.electronics.assembly.dto.RepairTaskRequest;
 import com.electronics.assembly.entity.Inspection;
+import com.electronics.assembly.entity.ProductionBatch;
 import com.electronics.assembly.entity.RepairTask;
 import com.electronics.assembly.entity.WorkOrder;
 import com.electronics.assembly.repository.InspectionRepository;
+import com.electronics.assembly.repository.ProductionBatchRepository;
 import com.electronics.assembly.repository.WorkOrderRepository;
 
 /**
@@ -34,13 +36,16 @@ import com.electronics.assembly.repository.WorkOrderRepository;
 public class InspectionService {
 
     private final InspectionRepository inspectionRepository;
+    private final ProductionBatchRepository batchRepository;
     private final WorkOrderRepository orderRepository;
     private final RepairTaskService repairTaskService;
 
     public InspectionService(InspectionRepository inspectionRepository,
+                             ProductionBatchRepository batchRepository,
                              WorkOrderRepository orderRepository,
                              RepairTaskService repairTaskService) {
         this.inspectionRepository = inspectionRepository;
+        this.batchRepository = batchRepository;
         this.orderRepository = orderRepository;
         this.repairTaskService = repairTaskService;
     }
@@ -73,6 +78,7 @@ public class InspectionService {
             throw new BizException("必须指定所属工单");
         }
         Long orderId = input.getOrder().getId();
+        Long batchId = input.getBatch() == null ? null : input.getBatch().getId();
         String requestId = input.getRequestId() == null || input.getRequestId().isBlank()
                 ? null : input.getRequestId().trim();
 
@@ -87,6 +93,30 @@ public class InspectionService {
         // 锁工单行串行化同一工单的质检提交：并发双击 / 网络重试在这里排队
         WorkOrder order = orderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> new BizException("工单不存在：" + orderId));
+        boolean batchOrder = batchRepository.findByOrderIdOrderByDeliverySeqAscIdAsc(orderId).stream()
+                .anyMatch(b -> !"历史".equals(b.getStatus()) && !"已取消".equals(b.getStatus()));
+        ProductionBatch batch = null;
+        if (batchOrder) {
+            if (batchId == null) {
+                throw new BizException("该工单已启用分批，质检必须指定制造批次");
+            }
+            batch = batchRepository.findByIdForUpdate(batchId)
+                    .orElseThrow(() -> new BizException("制造批次不存在：" + batchId));
+            if (!batch.getOrder().getId().equals(orderId)) {
+                throw new BizException("批次不属于该工单");
+            }
+            if (Boolean.TRUE.equals(batch.getReadonlyHistory())) {
+                throw new BizException("只读历史批次不能登记新质检");
+            }
+            if ("已取消".equals(batch.getStatus())) {
+                throw new BizException("已取消批次不能登记质检");
+            }
+            if (!"贴片中".equals(batch.getStatus()) && !"待检验".equals(batch.getStatus())) {
+                throw new BizException("批次投产之后才能质检，当前状态：" + batch.getStatus());
+            }
+        } else if (batchId != null) {
+            throw new BizException("历史工单未启用分批，不能指定批次");
+        }
         // 锁内再判一次幂等号：前一个持锁事务可能已带着相同 requestId 提交
         if (requestId != null) {
             var replay = inspectionRepository.findByRequestId(requestId);
@@ -111,6 +141,7 @@ public class InspectionService {
 
         Inspection insp = new Inspection();
         insp.setOrder(order);
+        insp.setBatch(batch);
         insp.setStepName(input.getStepName());
         insp.setDefectType(input.getDefectType());
         insp.setDefectPoints(points);

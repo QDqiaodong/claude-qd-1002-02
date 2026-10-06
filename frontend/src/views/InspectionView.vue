@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import api from '../api'
 
 // ------------------------------------------------------------------
@@ -17,7 +17,7 @@ const error = ref('')
 const tip = ref('')
 const MAX_POINTS = 12
 const submitting = ref(false)
-const form = ref({ orderId: null, stepName: 'AOI', defectType: '偏移', defectPoints: 0, sampleQty: 40, inspector: '孙悦' })
+const form = ref({ orderId: null, batchId: null, stepName: 'AOI', defectType: '偏移', defectPoints: 0, sampleQty: 40, inspector: '孙悦' })
 const DEFECTS = ['少件', '偏移', '虚焊', '连锡', '反向']
 
 // 返修工署名 / 复验署名与备注
@@ -33,6 +33,10 @@ const taskByInspection = computed(() => {
 })
 
 const scrapped = computed(() => inspections.value.filter((i) => i.verdict === '判废').length)
+
+const formOrder = computed(() => orders.value.find((o) => o.id === form.value.orderId))
+const formBatches = computed(() =>
+  (formOrder.value?.batches || []).filter((b) => !b.readonlyHistory && b.status !== '已取消'))
 
 // 待返修（返修工处理）/ 待复验（质检员处理）分泳道
 const todoRepair = computed(() => repairTasks.value.filter((t) => t.status === '待返修'))
@@ -61,7 +65,12 @@ async function create() {
   form.value.requestId = requestId
   submitting.value = true
   try {
-    const payload = { ...form.value, order: { id: form.value.orderId }, requestId }
+    const payload = {
+      ...form.value,
+      order: { id: form.value.orderId },
+      batch: form.value.batchId ? { id: form.value.batchId } : null,
+      requestId
+    }
     const saved = await api.createInspection(payload)
     tip.value = saved.verdict === '返修'
       ? `已登记质检，结论「返修」：返修任务已建立，工序「${saved.stepName}」已置为返修中`
@@ -108,6 +117,11 @@ function orderNoOf(id) {
   return orders.value.find((o) => o.id === id)?.orderNo || `#${id}`
 }
 
+watch(() => form.value.orderId, () => {
+  const bs = formBatches.value
+  form.value.batchId = bs.length ? bs[0].id : null
+})
+
 onMounted(load)
 </script>
 
@@ -125,6 +139,9 @@ onMounted(load)
       <div class="form-row">
         <select v-model="form.orderId" class="fld">
           <option v-for="o in orders" :key="o.id" :value="o.id">{{ o.orderNo }}</option>
+        </select>
+        <select v-if="formBatches.length" v-model="form.batchId" class="fld">
+          <option v-for="b in formBatches" :key="b.id" :value="b.id">{{ b.batchNo }} · {{ b.status }}</option>
         </select>
         <select v-model="form.stepName" class="fld">
           <option>上料</option><option>贴片</option><option>回流焊</option><option>AOI</option><option>目检</option>
@@ -160,7 +177,7 @@ onMounted(load)
           <div v-if="!todoRepair.length" class="lane-empty">暂无待返修任务</div>
           <div v-for="t in todoRepair" :key="t.id" class="rt-card">
             <div class="rt-main">
-              <b>{{ orderNoOf(t.order?.id ?? t.orderId) }}</b>
+              <b>{{ orderNoOf(t.order?.id ?? t.orderId) }}{{ t.batchNo ? ' / ' + t.batchNo : '' }}</b>
               <span>{{ t.stepName }}</span>
               <em>第 {{ t.roundNo }} 轮</em>
             </div>
@@ -173,7 +190,7 @@ onMounted(load)
           <div v-if="!todoRecheck.length" class="lane-empty">暂无待复验任务</div>
           <div v-for="t in todoRecheck" :key="t.id" class="rt-card">
             <div class="rt-main">
-              <b>{{ orderNoOf(t.order?.id ?? t.orderId) }}</b>
+              <b>{{ orderNoOf(t.order?.id ?? t.orderId) }}{{ t.batchNo ? ' / ' + t.batchNo : '' }}</b>
               <span>{{ t.stepName }}</span>
               <em>第 {{ t.roundNo }} 轮 · 返修人 {{ t.repairBy || '—' }}</em>
             </div>
@@ -199,7 +216,7 @@ onMounted(load)
           :class="{ scrap: i.verdict === '判废', repair: i.verdict === '返修' }"
         >
           <div class="insp-top">
-            <span class="i-no">{{ i.orderNo }}</span>
+            <span class="i-no">{{ i.orderNo }}<template v-if="i.batchNo"> / {{ i.batchNo }}</template></span>
             <span class="i-step">{{ i.stepName }}</span>
             <span class="i-type">{{ i.defectType }}</span>
             <span class="i-verdict">{{ i.verdict }}</span>

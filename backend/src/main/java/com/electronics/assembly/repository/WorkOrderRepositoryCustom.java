@@ -27,4 +27,7 @@ public interface WorkOrderRepositoryCustom {
      * @return 缺料行；空列表表示齐套通过
      */
     List<ShortageLine> findShortageLines(Long orderId);
+
+    /** 制造批次独立齐套：按该批次计划数量计算同一 BOM 的缺料项。 */
+    List<ShortageLine> findBatchShortageLines(Long orderId, Integer planQty);
 }

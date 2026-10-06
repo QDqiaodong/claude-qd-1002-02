@@ -13,7 +13,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.electronics.assembly.common.ApiResponse;
+import com.electronics.assembly.dto.BatchSplitRequest;
+import com.electronics.assembly.entity.ProductionBatch;
 import com.electronics.assembly.entity.WorkOrder;
+import com.electronics.assembly.service.ProductionBatchService;
 import com.electronics.assembly.service.WorkOrderService;
 
 /** 生产工单接口（齐套校验走自定义 Repository fragment） */
@@ -22,9 +25,11 @@ import com.electronics.assembly.service.WorkOrderService;
 public class WorkOrderController {
 
     private final WorkOrderService orderService;
+    private final ProductionBatchService batchService;
 
-    public WorkOrderController(WorkOrderService orderService) {
+    public WorkOrderController(WorkOrderService orderService, ProductionBatchService batchService) {
         this.orderService = orderService;
+        this.batchService = batchService;
     }
 
     @GetMapping
@@ -42,6 +47,18 @@ public class WorkOrderController {
     @GetMapping("/{id}/kit-check")
     public ApiResponse<Map<String, Object>> kitCheck(@PathVariable Long id) {
         return ApiResponse.success(orderService.kitCheck(id));
+    }
+
+    /** 首次启用分批：数量守恒通过才保存；有旧完成数量时自动落只读历史批次。 */
+    @PostMapping("/{id}/batches/split")
+    public ApiResponse<List<ProductionBatch>> split(@PathVariable Long id,
+                                                    @RequestBody BatchSplitRequest request) {
+        return ApiResponse.success("分批方案已保存", batchService.split(id, request));
+    }
+
+    @GetMapping("/{id}/batches")
+    public ApiResponse<List<ProductionBatch>> batches(@PathVariable Long id) {
+        return ApiResponse.success(batchService.listByOrder(id));
     }
 
     /** 齐套不通过的工单一览（fragment 手写查询） */

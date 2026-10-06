@@ -18,6 +18,10 @@ public interface InspectionRepository extends JpaRepository<Inspection, Long> {
 
     List<Inspection> findByOrderIdAndStepName(Long orderId, String stepName);
 
+    List<Inspection> findByBatchIdOrderByIdDesc(Long batchId);
+
+    List<Inspection> findByBatchIdAndStepNameOrderByIdDesc(Long batchId, String stepName);
+
     /** 提交幂等号：同号重复提交（双击 / 网络重试）返回首次登记的质检记录 */
     Optional<Inspection> findByRequestId(String requestId);
 }

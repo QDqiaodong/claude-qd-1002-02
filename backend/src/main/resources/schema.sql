@@ -15,13 +15,15 @@ CREATE DATABASE IF NOT EXISTS electronics_assembly
 USE electronics_assembly;
 
 SET FOREIGN_KEY_CHECKS = 0;
-DROP TABLE IF EXISTS repair_event;
-DROP TABLE IF EXISTS repair_task;
 DROP TABLE IF EXISTS line_change_event;
 DROP TABLE IF EXISTS line_change_batch;
 DROP TABLE IF EXISTS order_line_config;
+DROP TABLE IF EXISTS repair_event;
+DROP TABLE IF EXISTS repair_task;
 DROP TABLE IF EXISTS inspection;
 DROP TABLE IF EXISTS smt_step;
+DROP TABLE IF EXISTS batch_adjustment_event;
+DROP TABLE IF EXISTS production_batch;
 DROP TABLE IF EXISTS bom_item;
 DROP TABLE IF EXISTS component;
 DROP TABLE IF EXISTS work_order;
@@ -38,6 +40,49 @@ CREATE TABLE work_order (
     status        VARCHAR(16) NOT NULL COMMENT '待投产/贴片中/待检验/已完成/已取消',
     due_date      DATE,
     created_at    DATETIME
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 制造批次（母工单分批生产） ----------------
+CREATE TABLE production_batch (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id         BIGINT      NOT NULL,
+    batch_no         VARCHAR(36) NOT NULL COMMENT '母工单内唯一批次号',
+    plan_qty         INT         NOT NULL COMMENT '计划板数',
+    reported_qty     INT         NOT NULL DEFAULT 0 COMMENT '已报工板数',
+    inspected_qty    INT         NOT NULL DEFAULT 0 COMMENT '已送检板数',
+    completed_qty    INT         NOT NULL DEFAULT 0 COMMENT '已完成板数',
+    delivery_seq     INT             NULL COMMENT '交付顺序；只读历史批次为 NULL，新批次从 1 开始',
+    status           VARCHAR(16) NOT NULL COMMENT '待投产/贴片中/待检验/已完成/已取消/历史',
+    readonly_history TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '只读历史批次',
+    cancel_reason    VARCHAR(255),
+    created_at       DATETIME,
+    released_at      DATETIME,
+    finished_at      DATETIME,
+    CONSTRAINT fk_pb_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    UNIQUE KEY uk_pb_order_batch_no (order_id, batch_no),
+    UNIQUE KEY uk_pb_order_seq (order_id, delivery_seq),
+    CONSTRAINT ck_pb_qty CHECK (
+        plan_qty > 0 AND reported_qty >= 0 AND inspected_qty >= 0 AND completed_qty >= 0
+        AND reported_qty <= plan_qty AND inspected_qty <= plan_qty AND completed_qty <= plan_qty
+        AND reported_qty >= inspected_qty AND inspected_qty >= completed_qty
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE batch_adjustment_event (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id         BIGINT      NOT NULL,
+    batch_id         BIGINT      NULL COMMENT '删除后可为空，order_id/batch_no 保留审计轨迹',
+    batch_no         VARCHAR(36),
+    action           VARCHAR(16) NOT NULL COMMENT '拆分/调整/删除/取消/回收/减产/历史迁移',
+    before_qty       INT,
+    after_qty        INT,
+    related_batch_id BIGINT,
+    related_batch_no VARCHAR(36),
+    operator         VARCHAR(32) NOT NULL,
+    detail           VARCHAR(255),
+    created_at       DATETIME,
+    CONSTRAINT fk_bae_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_bae_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 物料台账 ----------------
@@ -64,18 +109,23 @@ CREATE TABLE bom_item (
 CREATE TABLE smt_step (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id    BIGINT      NOT NULL,
+    batch_id    BIGINT      NULL COMMENT '制造批次；NULL 为历史工单原流程',
     step_name   VARCHAR(16) NOT NULL COMMENT '上料/贴片/回流焊/AOI/目检',
     status      VARCHAR(16) NOT NULL COMMENT '待执行/进行中/已完成/返修中',
     operator    VARCHAR(32),
     started_at  DATETIME,
     finished_at DATETIME,
-    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id)
+    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_step_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
+    UNIQUE KEY uk_step_batch (batch_id, step_name),
+    KEY idx_step_order (order_id, step_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 质检与返修 ----------------
 CREATE TABLE inspection (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id      BIGINT      NOT NULL,
+    batch_id      BIGINT      NULL,
     step_name     VARCHAR(16) NOT NULL,
     defect_type   VARCHAR(16) NOT NULL COMMENT '少件/偏移/虚焊/连锡/反向',
     defect_points INT         NOT NULL DEFAULT 0 COMMENT '不良点数，超过 12 判废',
@@ -86,13 +136,16 @@ CREATE TABLE inspection (
     repair_done   TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '返修是否闭环（复验通过置 1）',
     checked_at    DATETIME,
     CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id),
-    UNIQUE KEY uk_insp_request (request_id)
+    CONSTRAINT fk_insp_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
+    UNIQUE KEY uk_insp_request (request_id),
+    KEY idx_insp_batch (batch_id, step_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 返修任务（质检不合格 → 返修 → 复验闭环） ----------------
 CREATE TABLE repair_task (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id            BIGINT      NOT NULL,
+    batch_id            BIGINT      NULL,
     inspection_id       BIGINT      NOT NULL COMMENT '触发任务的质检记录，一条质检最多一个返修任务',
     step_name           VARCHAR(16) NOT NULL COMMENT '返修发生的工序',
     round_no            INT         NOT NULL DEFAULT 1 COMMENT '返修轮次：复验不通过 +1',
@@ -109,12 +162,15 @@ CREATE TABLE repair_task (
     -- 不同工单的 order_id 不同，天然不可能串单；重复点击/并发提交由它兜底。
     active_order_id     BIGINT GENERATED ALWAYS AS (IF(status <> '已复验通过', order_id, NULL)) STORED
                         COMMENT '未闭环占位：同工单同工序唯一',
+    active_batch_id     BIGINT GENERATED ALWAYS AS (IF(status <> '已复验通过', COALESCE(batch_id, 0), NULL)) STORED
+                        COMMENT '未闭环批次占位：0=历史工单；同批次同工序唯一，不同批次互不阻塞',
     active_step_name    VARCHAR(16) GENERATED ALWAYS AS (IF(status <> '已复验通过', step_name, NULL)) STORED
-                        COMMENT '未闭环工序占位：同工单同工序唯一',
+                        COMMENT '未闭环工序占位：同工单同批次同工序唯一',
     CONSTRAINT fk_rt_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_rt_batch FOREIGN KEY (batch_id) REFERENCES production_batch (id),
     CONSTRAINT fk_rt_inspection FOREIGN KEY (inspection_id) REFERENCES inspection (id),
     UNIQUE KEY uk_rt_inspection (inspection_id),
-    UNIQUE KEY uk_rt_open (active_order_id, active_step_name)
+    UNIQUE KEY uk_rt_open (active_order_id, active_batch_id, active_step_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 返修处理记录（按轮次完整审计链） ----------------

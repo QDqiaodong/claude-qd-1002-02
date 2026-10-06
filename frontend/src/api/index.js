@@ -33,6 +33,19 @@ export default {
   releaseOrder: (id) => call(http.post(`/work-orders/${id}/release`)),
   reportOrder: (id, qty) => call(http.post(`/work-orders/${id}/report`, null, params({ qty }))),
   transferOrder: (id, target) => call(http.post(`/work-orders/${id}/transfer`, null, params({ target }))),
+  splitBatches: (id, d) => call(http.post(`/work-orders/${id}/batches/split`, d)),
+  listBatches: (id) => call(http.get(`/work-orders/${id}/batches`)),
+
+  // ---------------- 制造批次 ----------------
+  getBatch: (id) => call(http.get(`/production-batches/${id}`)),
+  kitCheckBatch: (id) => call(http.get(`/production-batches/${id}/kit-check`)),
+  releaseBatch: (id) => call(http.post(`/production-batches/${id}/release`)),
+  reportBatch: (id, qty) => call(http.post(`/production-batches/${id}/report`, null, params({ qty }))),
+  transferBatch: (id, target) => call(http.post(`/production-batches/${id}/transfer`, null, params({ target }))),
+  adjustBatch: (id, d) => call(http.put(`/production-batches/${id}`, d)),
+  deleteBatch: (id, recycleToBatchId, operator) =>
+    call(http.delete(`/production-batches/${id}`, { params: { recycleToBatchId, operator } })),
+  cancelBatch: (id, d) => call(http.post(`/production-batches/${id}/cancel`, d || {})),
 
   // ---------------- 物料 ----------------
   listComponents: (p) => call(http.get('/components', params(p))),

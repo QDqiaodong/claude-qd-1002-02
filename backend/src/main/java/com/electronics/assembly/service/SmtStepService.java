@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.electronics.assembly.common.BizException;
 import com.electronics.assembly.common.Dict;
+import com.electronics.assembly.entity.ProductionBatch;
 import com.electronics.assembly.entity.SmtStep;
 import com.electronics.assembly.repository.SmtStepRepository;
 
@@ -25,13 +26,16 @@ public class SmtStepService {
     private final SmtStepRepository stepRepository;
     private final LineChangeService lineChangeService;
     private final RepairTaskService repairTaskService;
+    private final ProductionBatchService batchService;
 
     public SmtStepService(SmtStepRepository stepRepository,
                           LineChangeService lineChangeService,
-                          RepairTaskService repairTaskService) {
+                          RepairTaskService repairTaskService,
+                          ProductionBatchService batchService) {
         this.stepRepository = stepRepository;
         this.lineChangeService = lineChangeService;
         this.repairTaskService = repairTaskService;
+        this.batchService = batchService;
     }
 
     public List<SmtStep> list(Long orderId, String status) {
@@ -55,6 +59,7 @@ public class SmtStepService {
     @Transactional
     public SmtStep start(Long id, String operator) {
         SmtStep step = get(id);
+        assertStepBatchMutable(step);
         // 规则①：前序工序必须已完成
         int idx = Dict.stepIndex(step.getStepName());
         if (idx < 0) {
@@ -62,14 +67,12 @@ public class SmtStepService {
         }
         if (idx > 0) {
             String prev = Dict.STEPS.get(idx - 1);
-            SmtStep prevStep = stepRepository
-                    .findByOrderIdAndStepName(step.getOrder().getId(), prev)
-                    .orElseThrow(() -> new BizException("前序工序「" + prev + "」尚未建立"));
+            SmtStep prevStep = findPreviousStep(step, prev);
             if (!"已完成".equals(prevStep.getStatus())) {
                 throw new BizException("前序工序「" + prev + "」尚未完成，当前状态：" + prevStep.getStatus());
             }
             // 前序处于返修中等状态时上面已拦下；这里再防一手「前序有未闭环返修却显示已完成」的不一致数据
-            repairTaskService.assertStepUnblocked(step.getOrder().getId(), prev, "开工");
+            assertRepairUnblocked(step, prev, "开工");
         }
         if (!Dict.canTransferStep(step.getStatus(), "进行中")) {
             if ("返修中".equals(step.getStatus())) {
@@ -79,7 +82,7 @@ public class SmtStepService {
             throw new BizException("工序「" + step.getStepName() + "」当前为「" + step.getStatus() + "」，不能开工");
         }
         // 本工序自身有未闭环返修也不允许开工（游标已置返修中时正常会落在上面的分支）
-        repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "开工");
+        assertRepairUnblocked(step, step.getStepName(), "开工");
         // 规则④：换线批次未放行时，阻止工单从上料推进到贴片
         lineChangeService.assertStepReleased(step.getOrder().getId(), step.getStepName(), "开工");
         step.setStatus("进行中");
@@ -92,6 +95,7 @@ public class SmtStepService {
     @Transactional
     public SmtStep finish(Long id) {
         SmtStep step = get(id);
+        assertStepBatchMutable(step);
         if ("返修中".equals(step.getStatus())) {
             throw new BizException("工序「" + step.getStepName()
                     + "」正在返修中，返修完成后只能由质检员复验推进为已完成，不能直接完工");
@@ -100,7 +104,7 @@ public class SmtStepService {
             throw new BizException("只有「进行中」的工序能完工，当前状态：" + step.getStatus());
         }
         // 未完成返修不能跳过该工序：本工序存在未闭环返修任务时禁止完工
-        repairTaskService.assertStepUnblocked(step.getOrder().getId(), step.getStepName(), "完工");
+        assertRepairUnblocked(step, step.getStepName(), "完工");
         // 规则④：换线批次未放行时，进行中的贴片也不能完工（首件确认前不得批量贴片）
         lineChangeService.assertStepReleased(step.getOrder().getId(), step.getStepName(), "完工");
         step.setStatus("已完成");
@@ -112,6 +116,7 @@ public class SmtStepService {
     @Transactional
     public SmtStep reset(Long id) {
         SmtStep step = get(id);
+        assertStepBatchMutable(step);
         if ("返修中".equals(step.getStatus())) {
             throw new BizException("工序「" + step.getStepName()
                     + "」正在返修中，返修闭环只能由质检员复验推进，不能手工退回");
@@ -124,15 +129,48 @@ public class SmtStepService {
         return stepRepository.save(step);
     }
 
-    /** 某工单的工序进度 */
+    /** 某工单的工序进度（兼容旧接口；分批后为该母工单全部批次的总进度） */
     public int[] progress(Long orderId) {
         List<SmtStep> steps = stepRepository.findByOrderIdOrderById(orderId);
         int done = 0;
+        int total = 0;
         for (SmtStep s : steps) {
+            // 历史迁移后的工序只通过历史批次卡片展示，不计入新批次母工单管道
+            if (s.getBatch() != null && "历史".equals(s.getBatch().getStatus())) {
+                continue;
+            }
+            total++;
             if ("已完成".equals(s.getStatus())) {
                 done++;
             }
         }
-        return new int[]{done, steps.size()};
+        return new int[]{done, total};
+    }
+
+    private void assertStepBatchMutable(SmtStep step) {
+        if (step.getBatch() != null && Boolean.TRUE.equals(step.getBatch().getReadonlyHistory())) {
+            throw new BizException("只读历史批次的工序不能调整");
+        }
+    }
+
+    private SmtStep findPreviousStep(SmtStep step, String prev) {
+        if (step.getBatch() != null) {
+            return stepRepository.findByBatchIdAndStepName(step.getBatch().getId(), prev)
+                    .orElseThrow(() -> new BizException("前序工序「" + prev + "」尚未建立"));
+        }
+        return stepRepository.findByOrderIdAndStepName(step.getOrder().getId(), prev)
+                .orElseThrow(() -> new BizException("前序工序「" + prev + "」尚未建立"));
+    }
+
+    private void assertRepairUnblocked(SmtStep step, String stepName, String action) {
+        if (step.getBatch() != null) {
+            int open = batchService.countOpenRepairs(step.getBatch().getId());
+            if (open > 0) {
+                throw new BizException("批次「" + step.getBatch().getBatchNo() + "」工序「" + stepName
+                        + "」存在 " + open + " 个未闭环返修，" + action + "被阻止：必须复验通过后才能继续");
+            }
+            return;
+        }
+        repairTaskService.assertStepUnblocked(step.getOrder().getId(), stepName, action);
     }
 }

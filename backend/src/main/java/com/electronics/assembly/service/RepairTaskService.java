@@ -134,7 +134,9 @@ public class RepairTaskService {
 
         // 同工单同工序已有未闭环返修任务：质检员对同一在制返修重复提交不合格时，
         // 不允许再建第二个任务——先把手上这轮流完复验。防止重复点击/并发产生重复任务。
-        List<RepairTask> openOnStep = taskRepository.findOpenByOrderIdAndStepName(orderId, insp.getStepName());
+        List<RepairTask> openOnStep = insp.getBatch() == null
+                ? taskRepository.findOpenByOrderIdAndStepName(orderId, insp.getStepName())
+                : taskRepository.findOpenByBatchIdAndStepName(insp.getBatch().getId(), insp.getStepName());
         if (!openOnStep.isEmpty()) {
             throw new BizException("工序「" + insp.getStepName() + "」已有未闭环返修任务（轮次 "
                     + openOnStep.get(0).getRoundNo() + "，状态：" + openOnStep.get(0).getStatus()
@@ -143,6 +145,7 @@ public class RepairTaskService {
 
         RepairTask task = new RepairTask();
         task.setOrder(order);
+        task.setBatch(insp.getBatch());
         task.setInspection(insp);
         task.setStepName(insp.getStepName());
         task.setRoundNo(1);
@@ -153,7 +156,7 @@ public class RepairTaskService {
                 + " " + insp.getDefectPoints() + " 点，第 1 轮返修已派工");
 
         // 对应工序游标置「返修中」：无论它原来是进行中还是已完成（不合格要回炉）
-        moveStepToRepairing(orderId, insp.getStepName());
+        moveStepToRepairing(task, orderId, insp.getStepName());
         return task;
     }
 
@@ -241,7 +244,7 @@ public class RepairTaskService {
                 inspectionRepository.save(insp);
             }
             // 唯一允许把「返修中」工序推进到「已完成」的通道
-            moveStepToFinished(task.getOrder().getId(), task.getStepName());
+            moveStepToFinished(task, task.getOrder().getId(), task.getStepName());
             log(task, "复验通过", inspector, "第 " + task.getRoundNo() + " 轮复验合格，工序「"
                     + task.getStepName() + "」恢复并置为已完成");
         } else {
@@ -254,7 +257,7 @@ public class RepairTaskService {
             log(task, "复验不通过", inspector, "复验不合格" + (trim(req.getNote()) == null ? "" : "：" + trim(req.getNote()))
                     + "，返修轮次递增到第 " + nextRound + " 轮");
             // 游标已在「返修中」，重复置位保证刷新后口径一致
-            moveStepToRepairing(task.getOrder().getId(), task.getStepName());
+            moveStepToRepairing(task, task.getOrder().getId(), task.getStepName());
         }
         return task;
     }
@@ -263,9 +266,16 @@ public class RepairTaskService {
 
     /**
      * 工序推进前断言：该工序存在未闭环返修时，不能开工 / 完工 / 跳过。
+     * 分批批次的同工序返修互不影响；空 batchId 为历史工单口径。
      */
     public void assertStepUnblocked(Long orderId, String stepName, String action) {
-        List<RepairTask> open = taskRepository.findOpenByOrderIdAndStepName(orderId, stepName);
+        assertStepUnblocked(orderId, null, stepName, action);
+    }
+
+    public void assertStepUnblocked(Long orderId, Long batchId, String stepName, String action) {
+        List<RepairTask> open = batchId == null
+                ? taskRepository.findOpenByOrderIdAndStepName(orderId, stepName)
+                : taskRepository.findOpenByBatchIdAndStepName(batchId, stepName);
         if (open.isEmpty()) {
             return;
         }
@@ -348,9 +358,8 @@ public class RepairTaskService {
     }
 
     /** 把对应工序游标置为「返修中」（已完成的不合格工序也要回炉停线） */
-    private void moveStepToRepairing(Long orderId, String stepName) {
-        SmtStep step = stepRepository.findByOrderIdAndStepName(orderId, stepName)
-                .orElseThrow(() -> new BizException("工单尚未铺开工序，无法返修：" + stepName));
+    private void moveStepToRepairing(RepairTask source, Long orderId, String stepName) {
+        SmtStep step = findStep(source, orderId, stepName);
         if (!"返修中".equals(step.getStatus())) {
             step.setStatus("返修中");
             step.setFinishedAt(null);
@@ -359,9 +368,8 @@ public class RepairTaskService {
     }
 
     /** 复验通过：返修中 → 已完成（返修闭环推进工序的唯一通道） */
-    private void moveStepToFinished(Long orderId, String stepName) {
-        SmtStep step = stepRepository.findByOrderIdAndStepName(orderId, stepName)
-                .orElseThrow(() -> new BizException("工单尚未铺开工序，无法恢复：" + stepName));
+    private void moveStepToFinished(RepairTask source, Long orderId, String stepName) {
+        SmtStep step = findStep(source, orderId, stepName);
         if (!"返修中".equals(step.getStatus())) {
             // 理论上不会发生：任务在制时游标必然停在返修中；保守起见只允许从返修中恢复
             throw new BizException("工序「" + stepName + "」当前为「" + step.getStatus()
@@ -370,6 +378,15 @@ public class RepairTaskService {
         step.setStatus("已完成");
         step.setFinishedAt(LocalDateTime.now());
         stepRepository.save(step);
+    }
+
+    private SmtStep findStep(RepairTask task, Long orderId, String stepName) {
+        if (task.getBatch() != null) {
+            return stepRepository.findByBatchIdAndStepName(task.getBatch().getId(), stepName)
+                    .orElseThrow(() -> new BizException("批次尚未铺开工序，无法返修：" + stepName));
+        }
+        return stepRepository.findByOrderIdAndStepName(orderId, stepName)
+                .orElseThrow(() -> new BizException("工单尚未铺开工序，无法返修：" + stepName));
     }
 
     private void log(RepairTask task, String action, String actor, String detail) {
@@ -396,6 +413,8 @@ public class RepairTaskService {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("taskId", t.getId());
             row.put("orderId", t.getOrder() == null ? null : t.getOrder().getId());
+            row.put("batchId", t.getBatch() == null ? null : t.getBatch().getId());
+            row.put("batchNo", t.getBatch() == null ? null : t.getBatch().getBatchNo());
             row.put("inspectionId", t.getInspection() == null ? null : t.getInspection().getId());
             row.put("stepName", t.getStepName());
             row.put("roundNo", t.getRoundNo());

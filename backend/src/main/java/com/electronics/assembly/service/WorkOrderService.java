@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,32 +37,41 @@ public class WorkOrderService {
     private final SmtStepRepository stepRepository;
     private final OrderLineConfigRepository configRepository;
     private final RepairTaskService repairTaskService;
+    private final ProductionBatchService batchService;
 
     public WorkOrderService(WorkOrderRepository orderRepository,
                             BomItemRepository bomRepository,
                             SmtStepRepository stepRepository,
                             OrderLineConfigRepository configRepository,
-                            RepairTaskService repairTaskService) {
+                            RepairTaskService repairTaskService,
+                            @Lazy ProductionBatchService batchService) {
         this.orderRepository = orderRepository;
         this.bomRepository = bomRepository;
         this.stepRepository = stepRepository;
         this.configRepository = configRepository;
         this.repairTaskService = repairTaskService;
+        this.batchService = batchService;
     }
 
+    @Transactional(readOnly = true)
     public List<WorkOrder> list(String status, String productModel) {
+        List<WorkOrder> result;
         if (status != null && !status.isBlank()) {
-            return orderRepository.findByStatus(status);
+            result = orderRepository.findByStatus(status);
+        } else if (productModel != null && !productModel.isBlank()) {
+            result = orderRepository.findByProductModel(productModel);
+        } else {
+            result = orderRepository.findAll();
         }
-        if (productModel != null && !productModel.isBlank()) {
-            return orderRepository.findByProductModel(productModel);
-        }
-        return orderRepository.findAll();
+        return batchService.enrichAll(result);
     }
 
+    @Transactional(readOnly = true)
     public WorkOrder get(Long id) {
-        return orderRepository.findById(id)
+        WorkOrder order = orderRepository.findById(id)
                 .orElseThrow(() -> new BizException("工单不存在：" + id));
+        batchService.enrich(order);
+        return order;
     }
 
     /**
@@ -132,7 +142,9 @@ public class WorkOrderService {
         order.setStatus("待投产");
         order.setDueDate(input.getDueDate());
         order.setCreatedAt(LocalDateTime.now());
-        return orderRepository.save(order);
+        WorkOrder saved = orderRepository.save(order);
+        batchService.enrich(saved);
+        return saved;
     }
 
     @Transactional
@@ -140,6 +152,10 @@ public class WorkOrderService {
         WorkOrder order = get(id);
         if ("已取消".equals(order.getStatus()) || "已完成".equals(order.getStatus())) {
             throw new BizException("工单已处于「" + order.getStatus() + "」，不能再修改");
+        }
+        boolean batchOrder = batchService.isBatchOrder(id);
+        if (batchOrder && input.getPlanQty() != null) {
+            throw new BizException("已启用分批的母工单不能直接改计划板数，请在数量守恒前提下调整未投产批次或取消批次");
         }
         if (input.getPriority() != null && !input.getPriority().isBlank()) {
             if (!Dict.isValidPriority(input.getPriority())) {
@@ -159,7 +175,9 @@ public class WorkOrderService {
         if (input.getDueDate() != null) {
             order.setDueDate(input.getDueDate());
         }
-        return orderRepository.save(order);
+        WorkOrder saved = orderRepository.save(order);
+        batchService.enrich(saved);
+        return saved;
     }
 
     /**
@@ -168,6 +186,9 @@ public class WorkOrderService {
     @Transactional
     public WorkOrder release(Long id) {
         WorkOrder order = get(id);
+        if (batchService.isBatchOrder(id)) {
+            throw new BizException("该工单已启用分批，请选择具体制造批次投产");
+        }
         if (!"待投产".equals(order.getStatus())) {
             throw new BizException("只有「待投产」的工单能投产，当前状态：" + order.getStatus());
         }
@@ -204,6 +225,7 @@ public class WorkOrderService {
             cfg.setUpdatedAt(LocalDateTime.now());
             configRepository.save(cfg);
         }
+        batchService.enrich(saved);
         return saved;
     }
 
@@ -211,6 +233,9 @@ public class WorkOrderService {
     @Transactional
     public WorkOrder report(Long id, Integer qty) {
         WorkOrder order = get(id);
+        if (batchService.isBatchOrder(id)) {
+            throw new BizException("该工单已启用分批，请对具体制造批次报工");
+        }
         if (qty == null || qty <= 0) {
             throw new BizException("报工数量必须大于 0");
         }
@@ -222,13 +247,18 @@ public class WorkOrderService {
                     + " 板超过计划 " + order.getPlanQty() + " 板");
         }
         order.setDoneQty(order.getDoneQty() + qty);
-        return orderRepository.save(order);
+        WorkOrder saved = orderRepository.save(order);
+        batchService.enrich(saved);
+        return saved;
     }
 
     /** 状态推进：待投产 → 贴片中 → 待检验 → 已完成 */
     @Transactional
     public WorkOrder transfer(Long id, String target) {
         WorkOrder order = get(id);
+        if (batchService.isBatchOrder(id)) {
+            throw new BizException("分批工单的母状态由各批次自动汇总，只有全部批次完成后才能完成，请操作具体批次");
+        }
         if (!Dict.isValidOrderStatus(target)) {
             throw new BizException("工单状态不合法：" + target);
         }
@@ -245,6 +275,8 @@ public class WorkOrderService {
                     + " 个返修任务未复验闭环，必须经质检员复验通过后才能推进到「" + target + "」");
         }
         order.setStatus(target);
-        return orderRepository.save(order);
+        WorkOrder saved = orderRepository.save(order);
+        batchService.enrich(saved);
+        return saved;
     }
 }

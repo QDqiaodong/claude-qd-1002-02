@@ -38,6 +38,12 @@ public class SmtStep {
     @JoinColumn(name = "order_id", nullable = false)
     private WorkOrder order;
 
+    /** 非空表示分批后的批次工序；NULL 为历史工单原流程。 */
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "batch_id")
+    @JsonIgnore
+    private ProductionBatch batch;
+
     /** 上料 / 贴片 / 回流焊 / AOI / 目检 */
     @Column(name = "step_name", nullable = false, length = 16)
     private String stepName;
@@ -59,5 +65,15 @@ public class SmtStep {
     @Transient
     public String getOrderNo() {
         return order == null ? null : order.getOrderNo();
+    }
+
+    @Transient
+    public Long getBatchId() {
+        return batch == null ? null : batch.getId();
+    }
+
+    @Transient
+    public String getBatchNo() {
+        return batch == null ? null : batch.getBatchNo();
     }
 }

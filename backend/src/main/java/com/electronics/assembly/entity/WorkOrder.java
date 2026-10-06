@@ -86,4 +86,29 @@ public class WorkOrder {
         }
         return (int) LocalDate.now().until(dueDate).getDays();
     }
+
+    /** 是否启用制造批次；由是否存在批次决定，历史工单为 false，继续走原流程。 */
+    @Transient
+    private Boolean batchEnabled;
+
+    /** 工单卡片批次树，由 ProductionBatchService 装配；未分批的历史工单为空。 */
+    @Transient
+    private java.util.List<com.electronics.assembly.entity.ProductionBatch> batches;
+
+    @Transient
+    public boolean isBatchEnabled() {
+        return Boolean.TRUE.equals(batchEnabled);
+    }
+
+    public void setBatchEnabled(Boolean batchEnabled) {
+        this.batchEnabled = batchEnabled;
+    }
+
+    public java.util.List<com.electronics.assembly.entity.ProductionBatch> getBatches() {
+        return batches;
+    }
+
+    public void setBatches(java.util.List<com.electronics.assembly.entity.ProductionBatch> batches) {
+        this.batches = batches;
+    }
 }

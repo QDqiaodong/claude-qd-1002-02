@@ -45,6 +45,19 @@ public class WorkOrderRepositoryCustomImpl implements WorkOrderRepositoryCustom 
         if (order == null) {
             return List.of();
         }
+        return findShortageLines(order.getProductModel(), order.getPlanQty());
+    }
+
+    @Override
+    public List<ShortageLine> findBatchShortageLines(Long orderId, Integer planQty) {
+        WorkOrder order = em.find(WorkOrder.class, orderId);
+        if (order == null || planQty == null) {
+            return List.of();
+        }
+        return findShortageLines(order.getProductModel(), planQty);
+    }
+
+    private List<ShortageLine> findShortageLines(String model, Integer planQty) {
         List<Object[]> rows = em.createQuery(
                 "select b.partNo, c.partName, b.unitQty, b.unitQty * :planQty, c.stockQty, c.status "
                         + "from BomItem b, Component c "
@@ -53,8 +66,8 @@ public class WorkOrderRepositoryCustomImpl implements WorkOrderRepositoryCustom 
                         + "  and (c.stockQty < b.unitQty * :planQty or c.status <> '正常') "
                         + "order by b.partNo",
                 Object[].class)
-                .setParameter("planQty", order.getPlanQty())
-                .setParameter("model", order.getProductModel())
+                .setParameter("planQty", planQty)
+                .setParameter("model", model)
                 .getResultList();
 
         List<ShortageLine> out = new ArrayList<>();
